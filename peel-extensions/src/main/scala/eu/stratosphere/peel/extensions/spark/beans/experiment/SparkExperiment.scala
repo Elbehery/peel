@@ -1,10 +1,10 @@
 package eu.stratosphere.peel.extensions.spark.beans.experiment
 
-import java.io.{IOException, FileWriter}
-import java.nio.file._
-
+import java.io.{FileWriter, IOException}
 import java.lang.{System => Sys}
+import java.nio.file._
 import java.nio.file.attribute.BasicFileAttributes
+
 import com.typesafe.config.Config
 import eu.stratosphere.peel.core.beans.data.{DataSet, ExperimentOutput}
 import eu.stratosphere.peel.core.beans.experiment.Experiment
@@ -68,7 +68,7 @@ object SparkExperiment {
 
     override def isSuccessful = state.runExitCode.getOrElse(-1) == 0
 
-    override protected def logFilePatterns = List(s"$runnerLogPath/*/")
+    override protected def logFilePatterns = List(s"$runnerLogPath")
 
     override protected def loadState(): State = {
       if (Files.isRegularFile(Paths.get(s"$home/state.json"))) {
@@ -86,21 +86,29 @@ object SparkExperiment {
 
     override protected def beforeRun(): Unit = {
       // get current latest folder
-      latestFolderBeforeRun = (for (pattern <- logFilePatterns; f <- (shell !! s"ls -tc $pattern").split(Sys.lineSeparator)) yield f).headOption
+      try {
+        // ls -ltc | awk '/^d/{print $NF; exit}'
+        latestFolderBeforeRun = (for (pattern <- logFilePatterns; f <- (shell !! "ls -ltc " + pattern + " | awk '/^d/{print $NF; exit}'").split(Sys.lineSeparator)) yield f).headOption
+      } catch {
+        // no logs before run
+        // if there is no folder at all, nonzero exit value 2 exception is thrown
+        case e: Exception => latestFolderBeforeRun = None
+      }
     }
 
     override protected def afterRun(): Unit = {
       try {
-        val logFolder = (for (pattern <- logFilePatterns; f <- (shell !! s"ls -tc $pattern").split(Sys.lineSeparator)) yield f).headOption
+        val logFolder = (for (pattern <- logFilePatterns; f <- (shell !! "ls -ltc " + pattern + " | awk '/^d/{print $NF; exit}'").split(Sys.lineSeparator)) yield f).headOption
         logFolder match {
           case Some(dir) => {
             // check if folder is actually new
             latestFolderBeforeRun match {
-              case Some(pathBeforeRun) => if (dir != pathBeforeRun) println(s"No new event log created, got $dir")
+              case Some(pathBeforeRun) => assert(dir != pathBeforeRun, s"No new event log created, got $dir")
               case None => // experiment is first result
             }
 
-            val path = Paths.get(dir.substring(0, dir.length - 1))
+            val path = Paths.get(runnerLogPath, dir)
+            assert(Files.exists(path), s"No valid log path: $path")
 
             shell ! s"rm -Rf $home/logs/*"
             val logPath = Paths.get(s"$home/logs/")
@@ -148,7 +156,8 @@ object SparkExperiment {
 
     private def !(command: String, outFile: String, errFile: String) = {
       val master = exp.config.getString("system.spark.config.defaults.spark.master")
-      shell ! s"${exp.config.getString("system.spark.path.home")}/bin/spark-submit --master $master $command > $outFile 2> $errFile"
+//      shell ! s"${exp.config.getString("system.spark.path.home")}/bin/spark-submit --master $master $command > $outFile 2> $errFile"
+      shell ! s"${exp.config.getString("system.spark.path.home")}/bin/spark-submit $command"
     }
   }
 
